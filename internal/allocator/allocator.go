@@ -401,25 +401,11 @@ func poolCount(p *config.Pool) int64 {
 		}
 		sz := int64(math.Pow(2, float64(b-o)))
 
-		cur := ipaddr.NewCursor([]ipaddr.Prefix{*ipaddr.NewPrefix(cidr)})
-		firstIP := cur.First().IP
-		lastIP := cur.Last().IP
-
 		if p.AvoidBuggyIPs {
-			if o <= 24 {
-				// A pair of buggy IPs occur for each /24 present in the range.
-				buggies := int64(math.Pow(2, float64(24-o))) * 2
-				sz -= buggies
-			} else {
-				// Ranges smaller than /24 contain 1 buggy IP if they
-				// start/end on a /24 boundary, otherwise they contain
-				// none.
-				if ipConfusesBuggyFirmwares(firstIP) {
-					sz--
-				}
-				if ipConfusesBuggyFirmwares(lastIP) {
-					sz--
-				}
+			// A pair of buggy IPs will always occur with IPv4,
+			// given that the first and last IPs are not usable
+			if cidr.IP.To4() != nil {
+				sz -= 2
 			}
 		}
 		total += sz
@@ -461,6 +447,17 @@ func ipConfusesBuggyFirmwares(ip net.IP) bool {
 	return ip[3] == 0 || ip[3] == 255
 }
 
+// ipIsNetworkIdOrBroadcast returns true if ip is the Network ID or the Broadcast IP address.
+//
+// Such addresses cannot be assigned to any devices.
+func ipIsNetworkIdOrBroadcast(ip net.IP, c ipaddr.Cursor) bool {
+	ip = ip.To4()
+	if ip == nil {
+		return false
+	}
+	return ip.Equal(c.First().IP) || ip.Equal(c.Last().IP)
+}
+
 func (a *Allocator) getIPFromCIDR(cidr *net.IPNet, avoidBuggyIPs bool, svc string, ports []Port, sharingKey, backendKey string) net.IP {
 	sk := &key{
 		sharing: sharingKey,
@@ -468,7 +465,7 @@ func (a *Allocator) getIPFromCIDR(cidr *net.IPNet, avoidBuggyIPs bool, svc strin
 	}
 	c := ipaddr.NewCursor([]ipaddr.Prefix{*ipaddr.NewPrefix(cidr)})
 	for pos := c.First(); pos != nil; pos = c.Next() {
-		if avoidBuggyIPs && ipConfusesBuggyFirmwares(pos.IP) {
+		if avoidBuggyIPs && (ipConfusesBuggyFirmwares(pos.IP) || ipIsNetworkIdOrBroadcast(pos.IP, *c)) {
 			continue
 		}
 		if a.checkSharing(svc, pos.IP.String(), ports, sk) != nil {
